@@ -1,0 +1,189 @@
+% 蒸发波导超视距信道建模及容量估计仿真
+% 复现文献《蒸发波导超视距信道建模及容量估计》(冯菊等, 电波科学学报, 2022)
+% 核心方法：基于PE模型的大尺度衰落+瑞利分布小尺度衰落+MIMO容量估算
+
+clear; clc; close all;
+
+%% 1. 系统参数设置（依据文献表1及4.1节仿真条件{insert\_element\_0\_}）
+param = struct();
+param.f = 10e9;             % 工作频率10GHz
+param.d_duct = 15;          % 蒸发波导高度15m
+param.h_t = 4;              % 发射天线高度4m
+param.h_r = 5;              % 接收天线高度5m（波导层内）
+param.h_r_out = 30;         % 波导层外天线高度30m（信号盲区）
+param.Pt = 30;              % 发射功率30dBm
+param.Gt = 8;               % 发射天线增益8dB
+param.Gr = 8;               % 接收天线增益8dB
+param.Ls = 1;               % 系统损耗1dB
+param.Fn = 10;              % 噪声系数10dB
+param.B = 100e6;            % 带宽100MHz
+param.N0 = -174;            % 噪声功率谱密度-174dBm/Hz
+param.x_max = 140e3;        % 最大传播距离140km
+param.dx = 500;             % 距离步长500m
+param.z_max = 50;           % 高度范围0-50m
+param.dz = 0.5;             % 高度步长0.5m
+
+% 计算网格（匹配文献中传播平面建模要求{insert\_element\_1\_}）
+param.x = 0:param.dx:param.x_max;
+param.z = 0:param.dz:param.z_max;
+param.Nx = length(param.x);  % 距离点数
+param.Nz = length(param.z);  % 高度点数
+
+%% 2. 蒸发波导折射率模型（文献公式3{insert\_element\_2\_}）
+M0 = 330;                    % 波导底层修正折射率
+c0 = 0.125;                  % 常数
+z0 = 0.00015;                % 参考高度
+param.M = M0 + c0*(param.z - param.d_duct.*log((param.z + z0)./z0));
+
+% 绘制修正折射率剖面（对应文献图1{insert\_element\_3\_}）
+figure;
+plot(param.M, param.z, 'LineWidth', 2);
+xlabel('修正折射率M');
+ylabel('高度z(m)');
+title('蒸发波导修正折射率剖面');
+grid on; axis tight;
+
+%% 3. 分步抛物方程(SSPE)求解大尺度衰落（文献1.2节{insert\_element\_4\_}）
+% 自由空间波数
+k0 = 2*pi*(param.f/3e8);
+
+% 初始场设置（高斯方向图天线，3dB波瓣宽度3°{insert\_element\_5\_}）
+theta3dB = 3*pi/180;
+u = exp(-(param.z - param.h_t).^2/(2*(theta3dB*param.z_max)^2));
+
+% 初始化场分布矩阵（Nz×Nx，高度×距离{insert\_element\_6\_}）
+U = zeros(param.Nz, param.Nx);
+U(:,1) = u;  % 初始场
+
+% 分步傅里叶变换求解PE（文献公式5{insert\_element\_7\_}）
+for n = 1:param.Nx-1
+    % 傅里叶变换
+    U_fft = fft(U(:,n));
+    
+    % 空间波数计算
+    p = (2*pi*param.f/3e8)*sin(linspace(-pi/2, pi/2, param.Nz));
+    
+    % 绕射项计算
+    diffract = exp(1i*param.dx*(sqrt(k0^2 - p.^2) - k0));
+    U_fft = U_fft .* diffract;
+    
+    % 逆傅里叶变换（确保列向量维度）
+    u_next = ifft(U_fft);
+    u_next = u_next(1:param.Nz);  % 截断匹配高度点数
+    u_next = reshape(u_next, param.Nz, 1);  % 强制列向量
+    
+    % 吸收边界条件（Cosine-taper窗{insert\_element\_8\_}）
+    tap_len = min(10, param.Nz);
+    taper = ones(param.Nz, 1);
+    if tap_len > 0
+        taper(end-tap_len+1:end) = cos(linspace(0, pi/2, tap_len)).^2;
+    end
+    u_next = u_next .* taper;  % 元素-wise相乘
+    
+    % 更新场分布
+    U(:,n+1) = u_next;
+end
+
+%% 4. 路径损耗计算（文献公式15-17{insert\_element\_9\_}）
+% 场强提取
+E = abs(U);
+
+% 自由空间场强参考
+E0 = 1./sqrt(4*pi*param.x/1e3);  % 距离单位转换为km
+
+% 波导层内（5m）路径损耗
+z_idx_in = find(param.z >= param.h_r, 1);  % 接收高度索引
+Fp_in = 20*log10(E(z_idx_in,:)./E0);
+L0 = 32.45 + 20*log10(param.f/1e6) + 20*log10(param.x/1e3);  % 自由空间损耗
+Lp_in = L0 - Fp_in;
+
+% 波导层外（30m）路径损耗
+z_idx_out = find(param.z >= param.h_r_out, 1);
+Fp_out = 20*log10(E(z_idx_out,:)./E0);
+Lp_out = L0 - Fp_out;
+
+% 绘制路径损耗分布（对应文献图3{insert\_element\_10\_}）
+figure;
+[X,Z] = meshgrid(param.x/1e3, param.z);
+surf(X, Z, 20*log10(E), 'EdgeColor', 'none');
+colormap jet; colorbar;
+xlabel('传播距离(km)');
+ylabel('高度(m)');
+title('蒸发波导环境中的路径损耗分布');
+view(2); axis tight;
+
+% 路径损耗对比（对应文献图4{insert\_element\_11\_}）
+figure;
+plot(param.x/1e3, Lp_in, 'b', 'LineWidth', 2);
+hold on;
+plot(param.x/1e3, Lp_out, 'r--', 'LineWidth', 2);
+plot(param.x/1e3, L0, 'k:', 'LineWidth', 2);
+legend('波导层内(h=5m)', '波导层外(h=30m)', '自由空间');
+xlabel('传播距离(km)');
+ylabel('路径损耗(dB)');
+title('路径损耗对比');
+grid on; axis([0 140 80 140]);
+
+%% 5. 小尺度衰落模型（瑞利分布{insert\_element\_12\_}）
+% 生成瑞利衰落系数（超视距场景A=0）
+N_sample = 1000;
+sigma = 1;
+h_s = sigma*(randn(1, N_sample) + 1i*randn(1, N_sample));  % 复高斯
+rayleigh = abs(h_s);  % 瑞利分布包络
+
+% 绘制瑞利分布（文献2.2节统计模型）
+figure;
+histogram(rayleigh, 50, 'Normalization', 'pdf');
+hold on;
+x = 0:0.1:4;
+plot(x, x/sigma^2.*exp(-x.^2/(2*sigma^2)), 'r', 'LineWidth', 2);
+xlabel('信号幅度');
+ylabel('概率密度');
+title('小尺度衰落瑞利分布');
+grid on;
+
+%% 6. MIMO信道容量计算（文献公式35{insert\_element\_13\_}）
+% 超视距点选择（100km处，对应文献4.2节{insert\_element\_14\_}）
+x_idx = find(param.x >= 100e3, 1);
+
+% 接收功率计算（文献公式18{insert\_element\_15\_}）
+parPr = param.Pt + param.Gt + param.Gr - Lp_in(x_idx) - param.Ls - param.Fn;
+Pr = parPr
+% 信噪比计算
+SNR_dB = Pr - 10*log10(param.B) - param.N0;
+rho = 10^(SNR_dB/10);
+
+% 不同天线配置容量对比（SISO、1x2 SIMO、2x2 MIMO）
+Nt_list = [1, 1, 2];
+Nr_list = [1, 2, 2];
+capacity = zeros(1, length(Nt_list));
+
+for i = 1:length(Nt_list)
+    Nt = Nt_list(i);
+    Nr = Nr_list(i);
+    
+    % 小尺度衰落矩{insert\_element\_16\_}阵（文献公式32）
+    Hs = (randn(Nr, Nt) + 1i*randn(Nr, Nt))/sqrt(2);
+    
+    % 大尺度衰落系{insert\_element\_17\_}数（文献公式31）
+    HL = 10^(-Lp_in(x_idx)/20);
+    H = HL * Hs;
+    
+    % 信道容量计算
+    capacity(i) = log2(det(eye(Nr) + (rho/Nt)*H*H'));  % bps/Hz
+    capacity(i) = capacity(i) * param.B / 1e6;  % 转换为Mbps
+end
+
+% 输出容量结{insert\_element\_18\_}果（对应文献图6）
+disp('100km超视距信道容量：');
+disp(['SISO: ', num2str(capacity(1)), ' Mbps']);
+disp(['1x2 SIMO: ', num2str(capacity(2)), ' Mbps']);
+disp(['2x2 MIMO: ', num2str(capacity(3)), ' Mbps']);
+
+% 绘制容量对比
+figure;
+bar(capacity);
+set(gca, 'XTickLabel', {'SISO', '1x2 SIMO', '2x2 MIMO'});
+ylabel('信道容量(Mbps)');
+title('100km处不同系统的信道容量');
+grid on;
