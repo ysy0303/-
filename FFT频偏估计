@@ -1,0 +1,84 @@
+% 分集FFT频偏估计算法仿真（显示预置与估计值）
+% 对应文献：一种适用于高动态超视距突发信道的频偏估计方法
+clear; clc; close all;
+
+%% 1. 核心参数（按文献设置）
+fs = 12000;          % 采样频率12kHz{insert\_element\_0\_}
+N_fft = 1024;        % FFT点数{insert\_element\_1\_}
+f_res = fs/N_fft;    % 频率分辨率≈11.7Hz{insert\_element\_2\_}
+doppler = 50;        % 多普勒频移50Hz{insert\_element\_3\_}
+SNR = 20;            % 导频信噪比20dB{insert\_element\_4\_}
+f_devs = [50,100,200,300,400,500,600]; % 预置频偏值{insert\_element\_5\_}
+diversity = 4;       % 4重分集{insert\_element\_6\_}
+samples = 100;       % 每个频偏的测试次数
+
+%% 2. 信号生成与仿真
+mean_estimates = zeros(length(f_devs), 1); % 存储平均估计值
+est_errors = zeros(length(f_devs), 1);     % 存储平均误差
+
+for i = 1:length(f_devs)
+    f_dev = f_devs(i);
+    ests = zeros(1, samples);
+    
+    for s = 1:samples
+        % 生成带衰落和噪声的信号（模拟超视距信道）
+        t = 0:1/fs:(N_fft*diversity-1)/fs;
+        signal = exp(1i*2*pi*(f_dev + doppler)*t); % 含频偏和多普勒
+        signal = signal .* (randn(size(t)) + 1i*randn(size(t)))/sqrt(2); % 瑞利衰落{insert\_element\_7\_}
+        signal = awgn(signal, SNR, 'measured'); % 加噪声
+        
+        % 估计频偏
+        ests(s) = estimate_freq(signal, fs, N_fft, diversity);
+    end
+    
+    % 计算平均估计值和误差
+    mean_estimates(i) = mean(ests);
+    est_errors(i) = mean(abs(ests - f_dev));
+end
+
+%% 3. 结果可视化
+% 绘制预置频偏与估计值对比图
+figure;
+bar([f_devs; mean_estimates']', 0.7);
+legend('预置频偏值', '平均频偏估计值');
+xlabel('测试序号');
+ylabel('频率值(Hz)');
+title('预置频偏与频偏估计值对比');
+set(gca, 'XTick', 1:length(f_devs), 'XTickLabel', f_devs);
+grid on;
+
+% 绘制估计误差图（与文献图4特性一致）
+figure;
+bar(f_devs, est_errors);
+hold on;
+yline(f_res, 'r--', ['FFT分辨率: ', num2str(f_res, '%.1f'), 'Hz']);
+xlabel('预置频偏(Hz)');
+ylabel('平均估计误差(Hz)');
+title('频偏估计误差');
+grid on;
+
+% 显示预置频偏与对应估计值表格（对应文献表1形式）
+disp('预置频偏值(Hz) | 平均频偏估计值(Hz) | 平均误差(Hz)');
+result_table = [f_devs', mean_estimates, est_errors];
+disp(result_table);
+
+%% 4. 频偏估计核心函数（放在文件结尾）
+function f_est = estimate_freq(signal, fs, N_fft, diversity)
+    % 分路处理并求平均（分集思想）{insert\_element\_8\_}
+    ests = zeros(1, diversity);
+    seg_len = length(signal)/diversity;
+    
+    for i = 1:diversity
+        % 提取第i路信号并做FFT
+        seg = signal((i-1)*seg_len+1:i*seg_len);
+        fft_mag = abs(fft(seg, N_fft));
+        [~, idx] = max(fft_mag); % 找频谱峰值位置
+        
+        % 计算频偏（含负频率处理）{insert\_element\_9\_}
+        ests(i) = idx * fs/N_fft;
+        if idx > N_fft/2
+            ests(i) = ests(i) - fs;
+        end
+    end
+    f_est = mean(ests); % 分集平均抵消偏差{insert\_element\_10\_}
+end
